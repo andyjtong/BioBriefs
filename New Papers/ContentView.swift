@@ -1,6 +1,7 @@
 //This one works but italics are truncated
 
 import Foundation
+import SwiftUI
 
 class PubMedManager {
     static let shared = PubMedManager()
@@ -92,8 +93,6 @@ struct PubMedSearchResult: Codable {
     }
 }
 
-import Foundation
-
 class PubMedXMLParser: NSObject, XMLParserDelegate {
     private let data: Data
     private var publications: [Publication] = []
@@ -170,7 +169,6 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
     }
 }
 
-import Foundation
 
 struct Publication: Identifiable {
     var id: String
@@ -198,8 +196,6 @@ struct Author {
     }
 }
 
-import Foundation
-
 class Settings: ObservableObject {
     @Published var meshTerms: [String] = ["Hematopoietic Stem Cells", "Inflammation", "Proteostasis", "Hematopoiesis", "Clonal Evolution"] {
         didSet {
@@ -222,7 +218,6 @@ class Settings: ObservableObject {
     }
 }
 
-import SwiftUI
 
 struct ContentView: View {
     @StateObject private var settings = Settings()
