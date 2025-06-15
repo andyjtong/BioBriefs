@@ -351,6 +351,7 @@ struct ContentView: View {
                 SettingsView(settings: settings)
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
         .onAppear {
             fetchPublications()
         }
