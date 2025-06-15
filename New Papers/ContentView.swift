@@ -42,7 +42,7 @@ class PubMedManager {
             
             do {
                 let result = try JSONDecoder().decode(PubMedSearchResult.self, from: data)
-                self.fetchPublicationDetails(ids: result.esearchresult.idlist, completion: completion)
+                self.fetchPublicationDetails(ids: result.esearchresult.idlist, meshTerms: meshTerms, completion: completion)
             } catch {
                 completion(nil, error)
             }
@@ -51,7 +51,7 @@ class PubMedManager {
         task.resume()
     }
     
-    private func fetchPublicationDetails(ids: [String], completion: @escaping ([Publication]?, Error?) -> Void) {
+    private func fetchPublicationDetails(ids: [String], meshTerms: [String], completion: @escaping ([Publication]?, Error?) -> Void) {
         let idString = ids.joined(separator: ",")
         
         let params: [String: String] = [
@@ -75,7 +75,7 @@ class PubMedManager {
                 return
             }
             
-            let parser = PubMedXMLParser(data: data)
+            let parser = PubMedXMLParser(data: data, userMeshTerms: meshTerms)
             parser.parse { publications in
                 completion(publications, nil)
             }
@@ -101,9 +101,13 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
     private var currentAuthors: [Author] = []
     private var currentAuthor: Author?
     private var completion: (([Publication]) -> Void)?
+    private var currentMeshTerm: String = ""
+    private var currentMeshTerms: [String] = []
+    private let userMeshTerms: [String]  // User's selected terms
     
-    init(data: Data) {
+    init(data: Data, userMeshTerms: [String]) {
         self.data = data
+        self.userMeshTerms = userMeshTerms
     }
     
     func parse(completion: @escaping ([Publication]) -> Void) {
@@ -113,14 +117,22 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
         parser.parse()
     }
     
-    // XMLParserDelegate methods
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
         currentElement = elementName
         
         if elementName == "PubmedArticle" {
-            currentPublication = Publication(id: "", title: "", abstract: "", firstAuthor: Author(lastName: "", foreName: "", initials: ""), lastAuthor: Author(lastName: "", foreName: "", initials: ""))
+            currentPublication = Publication(
+                id: "",
+                title: "",
+                abstract: "",
+                firstAuthor: Author(lastName: "", foreName: "", initials: ""),
+                lastAuthor: Author(lastName: "", foreName: "", initials: "")
+            )
+            currentMeshTerms = []
         } else if elementName == "Author" {
             currentAuthor = Author(lastName: "", foreName: "", initials: "")
+        } else if elementName == "DescriptorName" {
+            currentMeshTerm = ""
         }
     }
     
@@ -131,28 +143,60 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
         
         switch currentElement {
         case "PMID":
-            currentPublication?.id += trimmedString
+            currentPublication?.id.append(trimmedString)
         case "ArticleTitle":
-            currentPublication?.title += trimmedString
+            currentPublication?.title.append(trimmedString)
         case "AbstractText":
-            currentPublication?.abstract += trimmedString
+            currentPublication?.abstract.append(trimmedString)
         case "LastName":
-            currentAuthor?.lastName += trimmedString
+            currentAuthor?.lastName.append(trimmedString)
         case "ForeName":
-            currentAuthor?.foreName += trimmedString
+            currentAuthor?.foreName.append(trimmedString)
         case "Initials":
-            currentAuthor?.initials += trimmedString
+            currentAuthor?.initials.append(trimmedString)
+        case "DescriptorName":
+            currentMeshTerm.append(trimmedString)
         default:
             break
         }
     }
     
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        if elementName == "PubmedArticle" {
+            if var publication = currentPublication {
+                // Ensure we have at least one author
+                if !currentAuthors.isEmpty {
+                    publication.firstAuthor = currentAuthors.first!
+                    
+                    // For single-author papers, set lastAuthor = firstAuthor
+                    if currentAuthors.count == 1 {
+                        publication.lastAuthor = currentAuthors.first!
+                    } else {
+                        publication.lastAuthor = currentAuthors.last!
+                    }
+                    
+                    publications.append(publication)
+                }
+            }
+            currentPublication = nil
+            currentAuthors = []
+        }
         if elementName == "Author" {
             if let author = currentAuthor {
                 currentAuthors.append(author)
             }
             currentAuthor = nil
+        } else if elementName == "DescriptorName" {
+            currentMeshTerms.append(currentMeshTerm)
+            currentMeshTerm = ""
+        } else if elementName == "MeshHeadingList" {
+            // Find matching terms
+            let matched = userMeshTerms.filter { userTerm in
+                currentMeshTerms.contains { meshTerm in
+                    meshTerm.localizedCaseInsensitiveContains(userTerm)
+                }
+            }
+            currentPublication?.matchedMeshTerms = matched
         } else if elementName == "PubmedArticle" {
             if var publication = currentPublication, !currentAuthors.isEmpty {
                 publication.firstAuthor = currentAuthors.first!
@@ -169,20 +213,32 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
     }
 }
 
-
 struct Publication: Identifiable {
     var id: String
     var title: String
     var abstract: String
     var firstAuthor: Author
     var lastAuthor: Author
+    var matchedMeshTerms: [String] = []  // Add matched terms property
     var url: URL? {
         URL(string: "https://pubmed.ncbi.nlm.nih.gov/\(id)")
     }
     
-    // Add this computed property
     var hasAbstract: Bool {
         !abstract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    // Add HTML stripping
+    var cleanedTitle: String {
+        return title
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&[^;]+;", with: "", options: .regularExpression)
+    }
+    
+    var cleanedAbstract: String {
+        return abstract
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&[^;]+;", with: "", options: .regularExpression)
     }
 }
 
@@ -196,6 +252,14 @@ struct Author {
     }
 }
 
+// Add HTML stripping extension
+extension String {
+    func stripHTML() -> String {
+        return self
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&[^;]+;", with: "", options: .regularExpression)
+    }
+}
 class Settings: ObservableObject {
     @Published var meshTerms: [String] = ["Hematopoietic Stem Cells", "Inflammation", "Proteostasis", "Hematopoiesis", "Clonal Evolution"] {
         didSet {
@@ -218,7 +282,6 @@ class Settings: ObservableObject {
     }
 }
 
-
 struct ContentView: View {
     @StateObject private var settings = Settings()
     @State private var publications: [Publication] = []
@@ -226,6 +289,7 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var showingSettings = false
     @State private var needsRefresh = false
+    @State private var expandedPublicationID: String? = nil  // Track expanded abstract
     
     var body: some View {
         NavigationView {
@@ -247,10 +311,18 @@ struct ContentView: View {
                         .padding()
                 } else {
                     List(publications) { publication in
-                        PublicationView(publication: publication)
-                    }
-                    .refreshable {
-                        fetchPublications()
+                        PublicationView(
+                            publication: publication,
+                            isExpanded: expandedPublicationID == publication.id,
+                            toggleExpand: {
+                                // Close if already expanded, else expand this one
+                                if expandedPublicationID == publication.id {
+                                    expandedPublicationID = nil
+                                } else {
+                                    expandedPublicationID = publication.id
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -287,6 +359,7 @@ struct ContentView: View {
     private func fetchPublications() {
         isLoading = true
         errorMessage = nil
+        expandedPublicationID = nil  // Reset expanded state on refresh
         
         PubMedManager.shared.fetchRecentPublications(meshTerms: settings.meshTerms) { result, error in
             DispatchQueue.main.async {
@@ -303,15 +376,24 @@ struct ContentView: View {
 
 struct PublicationView: View {
     let publication: Publication
-    @State private var showAbstract = false
+    let isExpanded: Bool
+    let toggleExpand: () -> Void
+    
+    // Add computed property to check if we should show ellipsis
+    private var shouldShowEllipsis: Bool {
+        // Only show if last author exists AND is different from first author
+        return !publication.lastAuthor.displayName.isEmpty &&
+               publication.lastAuthor.displayName != publication.firstAuthor.displayName
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Title without link wrapping
+            // Title section
             HStack(spacing: 4) {
-                Text(publication.title)
+                Text(publication.cleanedTitle)
                     .font(.headline)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 
                 if let url = publication.url {
                     Link(destination: url) {
@@ -324,28 +406,60 @@ struct PublicationView: View {
                 }
             }
             
-            // Authors
-            HStack {
-                Text("\(publication.firstAuthor.displayName) ...")
+            // Authors section
+            HStack(alignment: .firstTextBaseline) {
+                Text(publication.firstAuthor.displayName)
                     .font(.subheadline)
-                Text("\(publication.lastAuthor.displayName)")
-                    .font(.subheadline)
+                
+                // Show ellipsis only if there's a last author
+                if shouldShowEllipsis {
+                    Text("...")
+                        .font(.subheadline)
+                        .padding(.horizontal, 2)
+                    
+                    Text(publication.lastAuthor.displayName)
+                        .font(.subheadline)
+                }
             }
             .padding(.top, 4)
             
-            // Show More button and abstract
-            if publication.hasAbstract {
-                Button(action: {
-                    withAnimation {
-                        showAbstract.toggle()
+            // Matched MeSH terms section
+            VStack(alignment: .leading, spacing: 4) {
+                if !publication.matchedMeshTerms.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(publication.matchedMeshTerms, id: \.self) { term in
+                                Text(term)
+                                    .font(.caption)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 4)
+                                    .background(Color.blue.opacity(0.05))
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color.blue, lineWidth: 1)
+                                    )
+                            }
+                        }
                     }
-                }) {
+                } else {
+                    Text("Related content (not exact MeSH match)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .italic()
+                }
+            }
+            .padding(.top, 4)
+            
+            // Abstract section
+            if publication.hasAbstract {
+                Button(action: toggleExpand) {
                     HStack {
-                        Text(showAbstract ? "Show Less" : "Show Abstract")
+                        Text(isExpanded ? "Hide Abstract" : "Show Abstract")
                             .font(.subheadline)
                             .foregroundColor(.blue)
                         
-                        Image(systemName: showAbstract ? "chevron.up" : "chevron.down")
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                             .font(.system(size: 12))
                             .foregroundColor(.blue)
                     }
@@ -354,10 +468,12 @@ struct PublicationView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 
-                if showAbstract {
-                    Text(publication.abstract)
+                if isExpanded {
+                    Text(publication.cleanedAbstract)
                         .font(.body)
                         .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                         .transition(.opacity)
                         .padding(.top, 4)
                 }
@@ -367,6 +483,7 @@ struct PublicationView: View {
         .contentShape(Rectangle())
     }
 }
+
 struct SettingsView: View {
     @ObservedObject var settings: Settings
     @State private var newTerm = ""
