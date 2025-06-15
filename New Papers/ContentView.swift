@@ -444,7 +444,7 @@ struct PublicationView: View {
                         }
                     }
                 } else {
-                    Text("Related content (not exact MeSH match)")
+                    Text("Related content (hierarchical match)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .italic()
