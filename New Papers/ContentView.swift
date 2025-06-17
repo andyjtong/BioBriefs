@@ -11,6 +11,10 @@ class PubMedManager {
     
     func fetchRecentPublications(meshTerms: [String], completion: @escaping ([Publication]?, Error?) -> Void) {
         // Calculate date 24 hours ago
+        guard !meshTerms.isEmpty else {
+            completion([], nil)  // Return empty results
+            return
+        }
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy/MM/dd"
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
