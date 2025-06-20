@@ -1,5 +1,3 @@
-//This one works but italics are truncated
-
 import Foundation
 import SwiftUI
 
@@ -10,11 +8,13 @@ class PubMedManager {
     private let fetchURL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     
     func fetchRecentPublications(meshTerms: [String], completion: @escaping ([Publication]?, Error?) -> Void) {
-        // Calculate date 24 hours ago
+        // Guard against empty MeSH terms
         guard !meshTerms.isEmpty else {
-            completion([], nil)  // Return empty results
+            completion([], nil)
             return
         }
+        
+        // Calculate date 24 hours ago
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy/MM/dd"
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
@@ -108,6 +108,12 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
     private var currentMeshTerm: String = ""
     private var currentMeshTerms: [String] = []
     private let userMeshTerms: [String]  // User's selected terms
+    private var currentAbstractContent: String = ""
+    private var currentTitleContent: String = ""
+    private var currentJournalTitle: String = ""
+    private var isInAbstract = false
+    private var isInTitle = false
+    private var isInJournal = false
     
     init(data: Data, userMeshTerms: [String]) {
         self.data = data
@@ -129,39 +135,55 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
                 id: "",
                 title: "",
                 abstract: "",
+                journal: "",
                 firstAuthor: Author(lastName: "", foreName: "", initials: ""),
                 lastAuthor: Author(lastName: "", foreName: "", initials: "")
             )
             currentMeshTerms = []
+            currentJournalTitle = ""
         } else if elementName == "Author" {
             currentAuthor = Author(lastName: "", foreName: "", initials: "")
         } else if elementName == "DescriptorName" {
             currentMeshTerm = ""
+        } else if elementName == "AbstractText" {
+            isInAbstract = true
+            currentAbstractContent = ""
+        } else if elementName == "ArticleTitle" {
+            isInTitle = true
+            currentTitleContent = ""
+        } else if elementName == "Journal" {
+            isInJournal = true
+        } else if elementName == "Title" && isInJournal {
+            // Reset journal title when starting a new journal title element
+            currentJournalTitle = ""
         }
     }
     
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        let trimmedString = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        if trimmedString.isEmpty { return }
-        
-        switch currentElement {
-        case "PMID":
-            currentPublication?.id.append(trimmedString)
-        case "ArticleTitle":
-            currentPublication?.title.append(trimmedString)
-        case "AbstractText":
-            currentPublication?.abstract.append(trimmedString)
-        case "LastName":
-            currentAuthor?.lastName.append(trimmedString)
-        case "ForeName":
-            currentAuthor?.foreName.append(trimmedString)
-        case "Initials":
-            currentAuthor?.initials.append(trimmedString)
-        case "DescriptorName":
-            currentMeshTerm.append(trimmedString)
-        default:
-            break
+        if isInAbstract {
+            currentAbstractContent += string
+        } else if isInTitle {
+            currentTitleContent += string
+        } else if isInJournal && currentElement == "Title" {
+            currentJournalTitle += string
+        } else {
+            let trimmedString = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedString.isEmpty { return }
+            
+            switch currentElement {
+            case "PMID":
+                currentPublication?.id.append(trimmedString)
+            case "LastName":
+                currentAuthor?.lastName.append(trimmedString)
+            case "ForeName":
+                currentAuthor?.foreName.append(trimmedString)
+            case "Initials":
+                currentAuthor?.initials.append(trimmedString)
+            case "DescriptorName":
+                currentMeshTerm.append(trimmedString)
+            default:
+                break
+            }
         }
     }
     
@@ -184,8 +206,7 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
             }
             currentPublication = nil
             currentAuthors = []
-        }
-        if elementName == "Author" {
+        } else if elementName == "Author" {
             if let author = currentAuthor {
                 currentAuthors.append(author)
             }
@@ -201,14 +222,16 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
                 }
             }
             currentPublication?.matchedMeshTerms = matched
-        } else if elementName == "PubmedArticle" {
-            if var publication = currentPublication, !currentAuthors.isEmpty {
-                publication.firstAuthor = currentAuthors.first!
-                publication.lastAuthor = currentAuthors.last!
-                publications.append(publication)
-            }
-            currentPublication = nil
-            currentAuthors = []
+        } else if elementName == "AbstractText" {
+            isInAbstract = false
+            currentPublication?.abstract = currentAbstractContent
+        } else if elementName == "ArticleTitle" {
+            isInTitle = false
+            currentPublication?.title = currentTitleContent
+        } else if elementName == "Journal" {
+            isInJournal = false
+        } else if elementName == "Title" && isInJournal {
+            currentPublication?.journal = currentJournalTitle
         }
     }
     
@@ -221,9 +244,10 @@ struct Publication: Identifiable {
     var id: String
     var title: String
     var abstract: String
+    var journal: String
     var firstAuthor: Author
     var lastAuthor: Author
-    var matchedMeshTerms: [String] = []  // Add matched terms property
+    var matchedMeshTerms: [String] = []
     var url: URL? {
         URL(string: "https://pubmed.ncbi.nlm.nih.gov/\(id)")
     }
@@ -232,17 +256,18 @@ struct Publication: Identifiable {
         !abstract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
-    // Add HTML stripping
-    var cleanedTitle: String {
-        return title
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&[^;]+;", with: "", options: .regularExpression)
+    // Convert HTML to Markdown
+    var markdownTitle: String {
+        HTMLToMarkdownFormatter.convert(html: title)
     }
     
-    var cleanedAbstract: String {
-        return abstract
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&[^;]+;", with: "", options: .regularExpression)
+    var markdownAbstract: String {
+        HTMLToMarkdownFormatter.convert(html: abstract)
+    }
+    
+    // Clean journal name (remove extra spaces/newline)s
+    var cleanedJournal: String {
+        journal.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -256,14 +281,75 @@ struct Author {
     }
 }
 
-// Add HTML stripping extension
-extension String {
-    func stripHTML() -> String {
-        return self
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&[^;]+;", with: "", options: .regularExpression)
+struct HTMLToMarkdownFormatter {
+    static func convert(html: String) -> String {
+        var markdown = html
+        /*
+        // Replace italics
+        markdown = markdown.replacingOccurrences(of: "<i>", with: "*")
+                           .replacingOccurrences(of: "</i>", with: "*")
+        
+        // Replace superscripts
+        markdown = markdown.replacingOccurrences(of: "<sup>", with: "^")
+                           .replacingOccurrences(of: "</sup>", with: "^")
+        
+        // Replace subscripts
+        markdown = markdown.replacingOccurrences(of: "<sub>", with: "~")
+                           .replacingOccurrences(of: "</sub>", with: "~")
+        
+        // Remove other HTML tags
+        markdown = markdown.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        
+        /* Handle common HTML entities
+        markdown = markdown.replacingOccurrences(of: "&alpha;", with: "α")
+                           .replacingOccurrences(of: "&beta;", with: "β")
+                           .replacingOccurrences(of: "&gamma;", with: "γ")
+                           .replacingOccurrences(of: "&delta;", with: "δ")
+                           .replacingOccurrences(of: "&epsilon;", with: "ε")
+                           .replacingOccurrences(of: "&zeta;", with: "ζ")
+                           .replacingOccurrences(of: "&eta;", with: "η")
+                           .replacingOccurrences(of: "&theta;", with: "θ")
+                           .replacingOccurrences(of: "&lambda;", with: "λ")
+                           .replacingOccurrences(of: "&mu;", with: "μ")
+                           .replacingOccurrences(of: "&nu;", with: "ν")
+                           .replacingOccurrences(of: "&xi;", with: "ξ")
+                           .replacingOccurrences(of: "&pi;", with: "π")
+                           .replacingOccurrences(of: "&rho;", with: "ρ")
+                           .replacingOccurrences(of: "&sigma;", with: "σ")
+                           .replacingOccurrences(of: "&tau;", with: "τ")
+                           .replacingOccurrences(of: "&phi;", with: "φ")
+                           .replacingOccurrences(of: "&chi;", with: "χ")
+                           .replacingOccurrences(of: "&psi;", with: "ψ")
+                           .replacingOccurrences(of: "&omega;", with: "ω")
+                           .replacingOccurrences(of: "&sup1;", with: "¹")
+                           .replacingOccurrences(of: "&sup2;", with: "²")
+                           .replacingOccurrences(of: "&sup3;", with: "³")
+                           .replacingOccurrences(of: "&sub1;", with: "₁")
+                           .replacingOccurrences(of: "&sub2;", with: "₂")
+                           .replacingOccurrences(of: "&sub3;", with: "₃")
+                           .replacingOccurrences(of: "&plusmn;", with: "±")
+                           .replacingOccurrences(of: "&times;", with: "×")
+                           .replacingOccurrences(of: "&divide;", with: "÷")
+                           .replacingOccurrences(of: "&deg;", with: "°")
+                           .replacingOccurrences(of: "&prime;", with: "′")
+                           .replacingOccurrences(of: "&Prime;", with: "″")
+                           .replacingOccurrences(of: "&micro;", with: "µ")
+                           .replacingOccurrences(of: "&middot;", with: "·")
+                           .replacingOccurrences(of: "&ndash;", with: "–")
+                           .replacingOccurrences(of: "&mdash;", with: "—")
+                           .replacingOccurrences(of: "&#xb7;", with: "·")
+                           .replacingOccurrences(of: "&#x2013;", with: "–")
+                           .replacingOccurrences(of: "&#x2014;", with: "—")
+                           .replacingOccurrences(of: "&amp;", with: "&")
+                           .replacingOccurrences(of: "&lt;", with: "<")
+                           .replacingOccurrences(of: "&gt;", with: ">")
+                           .replacingOccurrences(of: "&quot;", with: "\"")
+                           .replacingOccurrences(of: "&apos;", with: "'")
+        */*/
+        return markdown
     }
 }
+
 class Settings: ObservableObject {
     @Published var meshTerms: [String] = ["Hematopoietic Stem Cells", "Inflammation", "Proteostasis", "Hematopoiesis", "Clonal Evolution"] {
         didSet {
@@ -293,12 +379,23 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var showingSettings = false
     @State private var needsRefresh = false
-    @State private var expandedPublicationID: String? = nil  // Track expanded abstract
+    @State private var expandedPublicationID: String? = nil
     
     var body: some View {
         NavigationView {
             Group {
-                if isLoading {
+                if settings.meshTerms.isEmpty {
+                    VStack {
+                        Text("No MeSH terms selected")
+                            .font(.title2)
+                        Text("Add terms in Settings to see publications")
+                            .foregroundColor(.secondary)
+                        Button("Open Settings") {
+                            showingSettings = true
+                        }
+                        .padding(.top, 8)
+                    }
+                } else if isLoading {
                     ProgressView("Loading publications...")
                 } else if let error = errorMessage {
                     VStack {
@@ -319,7 +416,6 @@ struct ContentView: View {
                             publication: publication,
                             isExpanded: expandedPublicationID == publication.id,
                             toggleExpand: {
-                                // Close if already expanded, else expand this one
                                 if expandedPublicationID == publication.id {
                                     expandedPublicationID = nil
                                 } else {
@@ -364,7 +460,7 @@ struct ContentView: View {
     private func fetchPublications() {
         isLoading = true
         errorMessage = nil
-        expandedPublicationID = nil  // Reset expanded state on refresh
+        expandedPublicationID = nil
         
         PubMedManager.shared.fetchRecentPublications(meshTerms: settings.meshTerms) { result, error in
             DispatchQueue.main.async {
@@ -384,9 +480,7 @@ struct PublicationView: View {
     let isExpanded: Bool
     let toggleExpand: () -> Void
     
-    // Add computed property to check if we should show ellipsis
     private var shouldShowEllipsis: Bool {
-        // Only show if last author exists AND is different from first author
         return !publication.lastAuthor.displayName.isEmpty &&
                publication.lastAuthor.displayName != publication.firstAuthor.displayName
     }
@@ -395,7 +489,7 @@ struct PublicationView: View {
         VStack(alignment: .leading, spacing: 8) {
             // Title section
             HStack(spacing: 4) {
-                Text(publication.cleanedTitle)
+                Text(.init(publication.markdownTitle))
                     .font(.headline)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -416,7 +510,6 @@ struct PublicationView: View {
                 Text(publication.firstAuthor.displayName)
                     .font(.subheadline)
                 
-                // Show ellipsis only if there's a last author
                 if shouldShowEllipsis {
                     Text("...")
                         .font(.subheadline)
@@ -427,6 +520,14 @@ struct PublicationView: View {
                 }
             }
             .padding(.top, 4)
+            
+            // Journal section
+            if !publication.cleanedJournal.isEmpty {
+                Text(publication.cleanedJournal)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 2)
+            }
             
             // Matched MeSH terms section
             VStack(alignment: .leading, spacing: 4) {
@@ -474,7 +575,7 @@ struct PublicationView: View {
                 .buttonStyle(PlainButtonStyle())
                 
                 if isExpanded {
-                    Text(publication.cleanedAbstract)
+                    Text(.init(publication.markdownAbstract))
                         .font(.body)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
