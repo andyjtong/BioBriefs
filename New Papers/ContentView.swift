@@ -1,6 +1,72 @@
 import Foundation
 import SwiftUI
 
+class MeshTermLoader: ObservableObject {
+    static let shared = MeshTermLoader()
+    private(set) var trie = MeshTrie()
+    private var allTerms: [String] = []
+    
+    private init() {
+        loadMeshTermsFromBundle()
+    }
+    
+    private func loadMeshTermsFromBundle() {
+        guard let url = Bundle.main.url(forResource: "mesh_terms", withExtension: "json") else {
+            print("Error: Could not find mesh_terms.json in main bundle")
+            return
+        }
+        
+        do {
+            let data = try Data(contentsOf: url)
+            let terms = try JSONDecoder().decode([String].self, from: data)
+            allTerms = terms
+            
+            print("Loaded \(allTerms.count) MeSH terms")
+            for term in allTerms {
+                trie.insert(term)
+            }
+        } catch {
+            print("Error loading MeSH terms: \(error)")
+        }
+    }
+    
+    func searchSuggestions(for prefix: String) -> [String] {
+        guard !prefix.isEmpty else { return [] }
+        return trie.search(prefix: prefix)
+    }
+}
+
+class TrieNode {
+    var children: [Character: TrieNode] = [:]
+    var words: [String] = []
+}
+
+class MeshTrie {
+    private let root = TrieNode()
+    
+    func insert(_ word: String) {
+        var node = root
+        for char in word.lowercased() {
+            if node.children[char] == nil {
+                node.children[char] = TrieNode()
+            }
+            node = node.children[char]!
+            if !node.words.contains(word) {
+                node.words.append(word)
+            }
+        }
+    }
+    
+    func search(prefix: String) -> [String] {
+        var node = root
+        for char in prefix.lowercased() {
+            guard let nextNode = node.children[char] else { return [] }
+            node = nextNode
+        }
+        return Array(Set(node.words)).sorted()
+    }
+}
+
 class PubMedManager {
     static let shared = PubMedManager()
     
@@ -8,19 +74,16 @@ class PubMedManager {
     private let fetchURL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     
     func fetchRecentPublications(meshTerms: [String], completion: @escaping ([Publication]?, Error?) -> Void) {
-        // Guard against empty MeSH terms
         guard !meshTerms.isEmpty else {
             completion([], nil)
             return
         }
         
-        // Calculate date 24 hours ago
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy/MM/dd"
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
         let dateString = dateFormatter.string(from: yesterday)
         
-        // Create mesh term query
         let meshQuery = meshTerms.map { "\"\($0)\"[Mesh]" }.joined(separator: " OR ")
         
         let params: [String: String] = [
@@ -107,7 +170,7 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
     private var completion: (([Publication]) -> Void)?
     private var currentMeshTerm: String = ""
     private var currentMeshTerms: [String] = []
-    private let userMeshTerms: [String]  // User's selected terms
+    private let userMeshTerms: [String]
     private var currentAbstractContent: String = ""
     private var currentTitleContent: String = ""
     private var currentJournalTitle: String = ""
@@ -154,7 +217,6 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
         } else if elementName == "Journal" {
             isInJournal = true
         } else if elementName == "Title" && isInJournal {
-            // Reset journal title when starting a new journal title element
             currentJournalTitle = ""
         }
     }
@@ -190,11 +252,9 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         if elementName == "PubmedArticle" {
             if var publication = currentPublication {
-                // Ensure we have at least one author
                 if !currentAuthors.isEmpty {
                     publication.firstAuthor = currentAuthors.first!
                     
-                    // For single-author papers, set lastAuthor = firstAuthor
                     if currentAuthors.count == 1 {
                         publication.lastAuthor = currentAuthors.first!
                     } else {
@@ -215,7 +275,6 @@ class PubMedXMLParser: NSObject, XMLParserDelegate {
             currentMeshTerms.append(currentMeshTerm)
             currentMeshTerm = ""
         } else if elementName == "MeshHeadingList" {
-            // Find matching terms
             let matched = userMeshTerms.filter { userTerm in
                 currentMeshTerms.contains { meshTerm in
                     meshTerm.localizedCaseInsensitiveContains(userTerm)
@@ -248,6 +307,7 @@ struct Publication: Identifiable {
     var firstAuthor: Author
     var lastAuthor: Author
     var matchedMeshTerms: [String] = []
+    
     var url: URL? {
         URL(string: "https://pubmed.ncbi.nlm.nih.gov/\(id)")
     }
@@ -256,16 +316,6 @@ struct Publication: Identifiable {
         !abstract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
-    // Convert HTML to Markdown
-    var markdownTitle: String {
-        HTMLToMarkdownFormatter.convert(html: title)
-    }
-    
-    var markdownAbstract: String {
-        HTMLToMarkdownFormatter.convert(html: abstract)
-    }
-    
-    // Clean journal name (remove extra spaces/newline)s
     var cleanedJournal: String {
         journal.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -277,76 +327,7 @@ struct Author {
     var initials: String
     
     var displayName: String {
-        return "\(lastName) \(initials)"
-    }
-}
-
-struct HTMLToMarkdownFormatter {
-    static func convert(html: String) -> String {
-        var markdown = html
-        /*
-        // Replace italics
-        markdown = markdown.replacingOccurrences(of: "<i>", with: "*")
-                           .replacingOccurrences(of: "</i>", with: "*")
-        
-        // Replace superscripts
-        markdown = markdown.replacingOccurrences(of: "<sup>", with: "^")
-                           .replacingOccurrences(of: "</sup>", with: "^")
-        
-        // Replace subscripts
-        markdown = markdown.replacingOccurrences(of: "<sub>", with: "~")
-                           .replacingOccurrences(of: "</sub>", with: "~")
-        
-        // Remove other HTML tags
-        markdown = markdown.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        
-        /* Handle common HTML entities
-        markdown = markdown.replacingOccurrences(of: "&alpha;", with: "α")
-                           .replacingOccurrences(of: "&beta;", with: "β")
-                           .replacingOccurrences(of: "&gamma;", with: "γ")
-                           .replacingOccurrences(of: "&delta;", with: "δ")
-                           .replacingOccurrences(of: "&epsilon;", with: "ε")
-                           .replacingOccurrences(of: "&zeta;", with: "ζ")
-                           .replacingOccurrences(of: "&eta;", with: "η")
-                           .replacingOccurrences(of: "&theta;", with: "θ")
-                           .replacingOccurrences(of: "&lambda;", with: "λ")
-                           .replacingOccurrences(of: "&mu;", with: "μ")
-                           .replacingOccurrences(of: "&nu;", with: "ν")
-                           .replacingOccurrences(of: "&xi;", with: "ξ")
-                           .replacingOccurrences(of: "&pi;", with: "π")
-                           .replacingOccurrences(of: "&rho;", with: "ρ")
-                           .replacingOccurrences(of: "&sigma;", with: "σ")
-                           .replacingOccurrences(of: "&tau;", with: "τ")
-                           .replacingOccurrences(of: "&phi;", with: "φ")
-                           .replacingOccurrences(of: "&chi;", with: "χ")
-                           .replacingOccurrences(of: "&psi;", with: "ψ")
-                           .replacingOccurrences(of: "&omega;", with: "ω")
-                           .replacingOccurrences(of: "&sup1;", with: "¹")
-                           .replacingOccurrences(of: "&sup2;", with: "²")
-                           .replacingOccurrences(of: "&sup3;", with: "³")
-                           .replacingOccurrences(of: "&sub1;", with: "₁")
-                           .replacingOccurrences(of: "&sub2;", with: "₂")
-                           .replacingOccurrences(of: "&sub3;", with: "₃")
-                           .replacingOccurrences(of: "&plusmn;", with: "±")
-                           .replacingOccurrences(of: "&times;", with: "×")
-                           .replacingOccurrences(of: "&divide;", with: "÷")
-                           .replacingOccurrences(of: "&deg;", with: "°")
-                           .replacingOccurrences(of: "&prime;", with: "′")
-                           .replacingOccurrences(of: "&Prime;", with: "″")
-                           .replacingOccurrences(of: "&micro;", with: "µ")
-                           .replacingOccurrences(of: "&middot;", with: "·")
-                           .replacingOccurrences(of: "&ndash;", with: "–")
-                           .replacingOccurrences(of: "&mdash;", with: "—")
-                           .replacingOccurrences(of: "&#xb7;", with: "·")
-                           .replacingOccurrences(of: "&#x2013;", with: "–")
-                           .replacingOccurrences(of: "&#x2014;", with: "—")
-                           .replacingOccurrences(of: "&amp;", with: "&")
-                           .replacingOccurrences(of: "&lt;", with: "<")
-                           .replacingOccurrences(of: "&gt;", with: ">")
-                           .replacingOccurrences(of: "&quot;", with: "\"")
-                           .replacingOccurrences(of: "&apos;", with: "'")
-        */*/
-        return markdown
+        "\(lastName) \(initials)"
     }
 }
 
@@ -371,7 +352,6 @@ class Settings: ObservableObject {
         }
     }
 }
-
 struct ContentView: View {
     @StateObject private var settings = Settings()
     @State private var publications: [Publication] = []
@@ -424,6 +404,13 @@ struct ContentView: View {
                             }
                         )
                     }
+                    .refreshable {
+                        await withCheckedContinuation { continuation in
+                            fetchPublications {
+                                continuation.resume()
+                            }
+                        }
+                    }
                 }
             }
             .navigationTitle("Fresh PubMed ☕")
@@ -437,7 +424,10 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: fetchPublications) {
+                    Button(action: {
+                        // Fixed: Call without parameters
+                        fetchPublications()
+                    }) {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
@@ -457,7 +447,7 @@ struct ContentView: View {
         }
     }
     
-    private func fetchPublications() {
+    private func fetchPublications(completion: (() -> Void)? = nil) {
         isLoading = true
         errorMessage = nil
         expandedPublicationID = nil
@@ -470,6 +460,7 @@ struct ContentView: View {
                 } else if let result = result {
                     publications = result
                 }
+                completion?()
             }
         }
     }
@@ -489,7 +480,7 @@ struct PublicationView: View {
         VStack(alignment: .leading, spacing: 8) {
             // Title section
             HStack(spacing: 4) {
-                Text(.init(publication.markdownTitle))
+                Text(publication.title)
                     .font(.headline)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -575,7 +566,7 @@ struct PublicationView: View {
                 .buttonStyle(PlainButtonStyle())
                 
                 if isExpanded {
-                    Text(.init(publication.markdownAbstract))
+                    Text(publication.abstract)
                         .font(.body)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -593,7 +584,11 @@ struct PublicationView: View {
 struct SettingsView: View {
     @ObservedObject var settings: Settings
     @State private var newTerm = ""
+    @State private var suggestions: [String] = []
+    @State private var isSearching = false
     @Environment(\.presentationMode) var presentationMode
+    
+    @State private var searchTask: DispatchWorkItem?
     
     var body: some View {
         NavigationView {
@@ -608,13 +603,58 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Add New Term")) {
-                    TextField("Enter MeSH term", text: $newTerm)
-                    Button("Add Term") {
-                        if !newTerm.isEmpty {
-                            settings.meshTerms.append(newTerm)
-                            newTerm = ""
+                    TextField("Search MeSH terms...", text: $newTerm)
+                        .autocapitalization(.words)
+                        .disableAutocorrection(true)
+                        .onChange(of: newTerm) { _, newValue in
+                            searchTask?.cancel()
+                            
+                            guard newValue.count > 2 else {
+                                suggestions = []
+                                return
+                            }
+                            
+                            isSearching = true
+                            
+                            let task = DispatchWorkItem {
+                                suggestions = MeshTermLoader.shared.searchSuggestions(for: newValue)
+                                isSearching = false
+                            }
+                            searchTask = task
+                            
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
+                        }
+                    
+                    if isSearching {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .padding(.vertical, 4)
+                            Spacer()
                         }
                     }
+                    
+                    if !suggestions.isEmpty && !isSearching {
+                        ForEach(suggestions.prefix(5), id: \.self) { suggestion in
+                            Button(action: {
+                                newTerm = suggestion
+                                suggestions = []
+                            }) {
+                                Text(suggestion)
+                                    .font(.callout)
+                                    .foregroundColor(.blue)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    
+                    Button(action: addTerm) {
+                        Text("Add \"\(newTerm)\"")
+                    }
+                    .disabled(newTerm.isEmpty)
+                    .padding(.top, 8)
                 }
             }
             .navigationTitle("Settings")
@@ -627,10 +667,24 @@ struct SettingsView: View {
             }
         }
     }
+    
+    private func addTerm() {
+        if !newTerm.isEmpty {
+            if !settings.meshTerms.contains(newTerm) {
+                settings.meshTerms.append(newTerm)
+            }
+            newTerm = ""
+            suggestions = []
+        }
+    }
 }
 
 @main
 struct PubMedRecentApp: App {
+    init() {
+        _ = MeshTermLoader.shared
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()

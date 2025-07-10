@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		FF8E40862E1CA9E9009A520A /* mesh_terms.json in Resources */ = {isa = PBXBuildFile; fileRef = FF8E40852E1CA9E9009A520A /* mesh_terms.json */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		FFAD61222DFA3F6900D638F5 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +28,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		FF8E40852E1CA9E9009A520A /* mesh_terms.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mesh_terms.json; sourceTree = "<group>"; };
 		FFAD61132DFA3F6800D638F5 /* New Papers.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "New Papers.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFAD61212DFA3F6900D638F5 /* New PapersTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "New PapersTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFAD612B2DFA3F6900D638F5 /* New PapersUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "New PapersUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -79,6 +84,7 @@
 				FFAD61242DFA3F6900D638F5 /* New PapersTests */,
 				FFAD612E2DFA3F6900D638F5 /* New PapersUITests */,
 				FFAD61142DFA3F6800D638F5 /* Products */,
+				FF8E40852E1CA9E9009A520A /* mesh_terms.json */,
 			);
 			sourceTree = "<group>";
 		};
@@ -212,6 +218,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FF8E40862E1CA9E9009A520A /* mesh_terms.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
