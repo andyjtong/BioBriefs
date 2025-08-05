@@ -332,7 +332,7 @@ struct Author {
 }
 
 class Settings: ObservableObject {
-    @Published var meshTerms: [String] = ["Hematopoietic Stem Cells", "Inflammation", "Proteostasis", "Hematopoiesis", "Clonal Evolution"] {
+    @Published var meshTerms: [String] = [] {
         didSet {
             saveTerms()
         }
