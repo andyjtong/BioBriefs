@@ -90,6 +90,7 @@ class PubMedManager {
             "db": "pubmed",
             "retmode": "json",
             "sort": "pubdate",
+            "retmax": "200",
             "term": "(\(meshQuery)) AND (\(dateString)[PDAT] : \(dateFormatter.string(from: Date()))[PDAT])"
         ]
         
